@@ -1,0 +1,817 @@
+---
+title: "Project3: Redo of Project 2 Predicting Species of Microtus"
+subtitle: "STAT 601: Group 5 (Fall 2024)"
+author: "Neha Karna, Prafulla Shrestha, 
+Aidan Stewart, Josh Lefdal, Shivam Bhardwaj"
+date: "3rd Dec, 2024"
+output:
+  pdf_document: default
+  html_document: default
+  keep_md: TRUE
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning=FALSE, message=FALSE, fig.width = 10, fig.height = 7, dev = "jpeg",
+  fig.path = "plots/")
+```
+
+```{r, warning=FALSE, message=FALSE}
+
+library(dplyr)
+library(GGally)
+
+```
+
+# Data Manipulation for known dataset
+
+1.  Read the Data "Vole Skulls.xlsm"
+2.  Create three datasets: "Unknown", "Subterraneus", "Multiplex"
+3.  Change column names for consistency through all three datasets
+
+```{r}
+library(readxl)
+#Read data files into R
+file_path <- "Vole Skulls.xlsm"
+
+unknown <- read_excel(file_path, sheet = "Unknown")
+subterraneus <- read_excel(file_path, sheet = "Subterraneus")
+multiplex <- read_excel(file_path, sheet = "Multiplex")
+
+# change column names for consistency
+names(unknown) <- c("index", "chromosomal_id", "skull_length", "skull_height", "skull_width")
+names(subterraneus) <- names(unknown)
+names(multiplex) <- names(unknown)
+
+```
+
+4.  Remove NA rows in Subterraneus and Multiplex datasets
+5.  Merge "Subterraneus" and "Multiplex" and name it "Known"
+6.  Create response variable.
+7.  Add response variable where 1 represents subterraneus and 0 represents Multiplex
+
+```{r}
+# Remove NA values for subterraneus and multiplex data sets
+subterraneus <- subterraneus[!apply(subterraneus, 1, function(x) {any(is.na(x))}), ]
+multiplex <- multiplex[!apply(multiplex, 1, function(x) {any(is.na(x))}), ]
+
+# Combine the subterraneus and multiplex data sets
+known<- rbind(subterraneus, multiplex)
+
+# Reset the "Index" to count from 1 to the total number of rows
+known <- known %>%
+  mutate(`index` = row_number())
+
+# Assign a binary response variable to the Known data
+known$response <- ifelse(known$`chromosomal_id` == "subterraneus", 1, 0)
+```
+
+### Visualize known data set for chromosomal id
+
+Observe the known data set outliers in a table.
+
+```{r}
+# Load the tidyr package if not already loaded
+library(tidyr)
+
+# Reshape using pivot_longer
+known_long <- known %>%
+  pivot_longer(
+    cols = c(skull_length, skull_height, skull_width),  # Columns to reshape
+    names_to = "measurement",                          # New column for measurement type
+    values_to = "value"                                # New column for measurement values
+  )
+# Identify outliers based on IQR
+outliers <- known_long %>%
+  group_by(measurement) %>%
+  filter(value < quantile(value, 0.25) - 1.5 * IQR(value) |
+         value > quantile(value, 0.75) + 1.5 * IQR(value))
+
+print(paste("List of Outliers in the Known Dataset"))
+print(outliers)
+
+library(ggplot2)
+#Boxplot comparison in a single plot with labled outliers 
+ggplot(known_long, aes(x = chromosomal_id, y = value, fill=chromosomal_id)) +
+  geom_boxplot() +
+  geom_text(data = outliers, aes(label = index), color = "red", size = 2.5, vjust = -0.5) + #lable outlier with index value
+  facet_wrap(~ measurement, scales = "free",
+             labeller = labeller(measurement = c("skull_length" = "Vole Skull Length",
+                                                 "skull_height" = "Vole Skull height",
+                                                 "skull_width" = "Vole Skull width"))) +
+  labs(title = "Boxplot of Vole Skull Measurements by Chromosomal Id",
+       x = "Chromosomal Id",
+       y = "Measurement (0.01mm)") +
+  theme_minimal()
+
+#Histogram comparison in a single plot
+ggplot(known_long, aes(x = value, fill = chromosomal_id)) +
+  geom_histogram(position = "identity", alpha = 0.6, bins = 30) +  
+  facet_wrap(~ measurement, scales = "free", 
+             labeller = labeller(measurement = c("skull_length" = "Vole Skull Length",
+                                                 "skull_height" = "Vole Skull Height",
+                                                 "skull_width" = "Vole Skull Width"))) +
+  labs(title = "Histogram of Vole Skull Measurements by Chromosomal Id",
+       x = "Measurement (0.01mm)",
+       y = "Frequency") +
+  theme_minimal() +
+  scale_fill_manual(values = c("subterraneus" = "blue", "multiplex" = "red"))
+```
+
+## Remove outliers
+
+Removing the rows with outliers in any of the columns
+
+```{r}
+# Identify outliers based on IQR
+outliers <- known_long %>%
+  group_by(measurement) %>%
+  filter(value < quantile(value, 0.25) - 1.5 * IQR(value) |
+         value > quantile(value, 0.75) + 1.5 * IQR(value))
+
+# Check and filter outliers based on these thresholds
+outliers <- known_long %>%
+  group_by(measurement) %>%
+  filter(value < quantile(value, 0.25) - 1.5 * IQR(value) |
+         value > quantile(value, 0.75) + 1.5 * IQR(value))
+
+# Remove rows in the 'known' dataset with any outlier
+known <- known %>%
+  filter(!index %in% outliers$index)
+
+# Rename 'value' column to 'outlier_value'
+outliers <- outliers %>%
+  rename(outlier_value = value) %>%
+  select(-response)
+
+cat("\nIdentified Outliers:\n")
+print(outliers)
+```
+
+# EDA for known dataset
+
+## Descriptive Summary
+
+Obtaining a descripitive summary of the known dataset following removal of outliers
+
+```{r}
+
+#to obtain Descriptive Summary with clean format
+summary_df<- known %>%
+  group_by(chromosomal_id) %>%
+  summarize(
+    N= n(),
+    min_skull_length = min(skull_length),
+    max_skull_length = max(skull_length),
+    mean_skull_length = mean(skull_length),
+    min_skull_height = min(skull_height),
+    max_skull_height = max(skull_height),
+    mean_skull_height = mean(skull_height),
+    min_skull_width = min(skull_width),
+    max_skull_width= max(skull_width),
+    mean_skull_width = mean(skull_width)
+  )
+#rename for better readability
+colnames(summary_df) <- c("Chromosomal type","number", 
+                          "minimum skull length", "maximum skull length", "mean skull length",
+                          "minimum skull height", "maximum skull height", "mean skull height",
+                          "minimum skull width", "maximum skull width", "mean skull width"
+                          )
+#transpose to view the table in long format
+summary_df<- as.data.frame(t(summary_df)) 
+colnames(summary_df) <- NULL
+
+cat("\nDescriptive Summary:\n")
+print(summary_df)
+
+```
+
+## Box plot
+
+Observe the known dataset in a boxplot, confirming outliers were removed.
+
+```{r}
+# Reshape using pivot_longer
+known_long <- known %>%
+  pivot_longer(
+    cols = c(skull_length, skull_height, skull_width),  # Columns to reshape
+    names_to = "measurement",                          # New column for measurement type
+    values_to = "value"                                # New column for measurement values
+  )
+
+#Boxplot comparison in a single plot
+ggplot(known_long, aes(x = chromosomal_id, y = value, fill=chromosomal_id)) +
+  geom_boxplot() +
+  facet_wrap(~ measurement, scales = "free",
+             labeller = labeller(measurement = c("skull_length" = "Vole Skull Length",
+                                                 "skull_height" = "Vole Skull height",
+                                                 "skull_width" = "Vole Skull width"))) +
+  labs(title = "Boxplot of Vole Skull Measurements by Chromosomal Id",
+       x = "Chromosomal Id",
+       y = "Measurement (0.01mm)") +
+  theme_minimal()
+```
+
+## Histogram
+
+Observe the known dataset in a histogram, confirming outliers were removed.
+
+```{r}
+#Histogram comparison in a single plot
+ggplot(known_long, aes(x = value, fill = chromosomal_id)) +
+  geom_histogram(position = "identity", alpha = 0.6, bins = 30) +  
+  facet_wrap(~ measurement, scales = "free", 
+             labeller = labeller(measurement = c("skull_length" = "Vole Skull Length",
+                                                 "skull_height" = "Vole Skull Height",
+                                                 "skull_width" = "Vole Skull Width"))) +
+  labs(title = "Histogram of Vole Skull Measurements by Chromosomal Id",
+       x = "Measurement (0.01mm)",
+       y = "Frequency") +
+  theme_minimal() +
+  scale_fill_manual(values = c("subterraneus" = "blue", "multiplex" = "red"))
+
+```
+
+**Comment on the boxplot:** The outliers that are identified in the boxplot, but not by the Interquartile Range Threshold of (1\*IQR) i.e., not labeled, are most likely due to the differences in calculation of outliers by the boxplot. The outliers here can be considered minor deviation within the Threshold and are considered non-material.
+
+## Pairwise correlation plot
+
+Observe the known dataset in a correlation plot.
+
+```{r}
+
+# Create a pair plot, coloring by Chromosomal type
+ggpairs(
+  known,
+  columns = c("skull_length", "skull_height", "skull_width"),
+  aes(color = chromosomal_id, alpha = 0.5)
+) + 
+  labs(title = "Pairwise comparision") +
+  theme_minimal()
+
+```
+
+# Data Manipulation for unknown Dataset
+
+Removal of NA values in the unknown dataset that do not have a column in any of the columns (i.e., blank rows).
+
+```{r}
+#remove NA rows with no value in all of the columns
+unknown <- unknown %>% filter(rowSums(is.na(.)) < ncol(.))
+
+library(psych)
+# Check the cleaned and renamed data set
+cat("\nCleaned Unknown Data:\n")
+describe(unknown)
+
+```
+
+### Visualize unknown dataset
+
+Observe the unknown dataset in a histogram, viewing the outliers.
+
+```{r, warning=FALSE}
+# Create box plots of the known data to review outliers
+unknown_skull_height <- ggplot(unknown, aes(y = skull_height)) + 
+  geom_boxplot(fill = "lightblue", color = "darkblue") + 
+  ggtitle("Box Plot for Skull Height") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+unknown_skull_length <- ggplot(unknown, aes(y = skull_length)) + 
+  geom_boxplot(fill = "lightgreen", color = "darkgreen") + 
+  ggtitle("Box Plot for Skull Length") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+unknown_skull_width <- ggplot(unknown, aes(y = skull_width)) + 
+  geom_boxplot(fill = "lightcoral", color = "darkred") + 
+  ggtitle("Box Plot for Skull Width") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Combine all plots into one layout
+library(gridExtra)
+grid.arrange(unknown_skull_height, unknown_skull_length, unknown_skull_width, ncol = 3)
+```
+
+## Replace large outliers (typos) by capping
+
+Replace outliers with the specified values based on the specified bounds (capping outliers). This was identified based on manual inspection, since the data set was small. We didn't see any typos for skull_height
+
+-   For skull_length: replace values below 1907 with 1900 and values above 2606 with 2600
+-   For skull_width: replace values below 374 with 400 and values above 546 with 500
+
+**Note:** We are only targeting extremely large outliers that were identified as typo, while maintaining the variability in the data.
+
+```{r}
+
+# Initialize vectors to store indices and original values of replaced outliers (Which indices are True?)
+skull_length_replaced <- which(!is.na(unknown$skull_length) & (unknown$skull_length < 1907 | unknown$skull_length > 2606))
+skull_width_replaced <- which(!is.na(unknown$skull_width) & (unknown$skull_width < 374 | unknown$skull_width > 546))
+
+# Capture original values that are outliers
+original_skull_length <- unknown$skull_length[skull_length_replaced]
+original_skull_width <- unknown$skull_width[skull_width_replaced]
+
+# Replace outliers as specified
+unknown$skull_length <- ifelse(!is.na(unknown$skull_length) & unknown$skull_length < 1907, 1900,
+                                ifelse(!is.na(unknown$skull_length) & unknown$skull_length > 2606, 2600, unknown$skull_length))
+
+unknown$skull_width <- ifelse(!is.na(unknown$skull_width) & unknown$skull_width < 374, 400,
+                               ifelse(!is.na(unknown$skull_width) & unknown$skull_width > 546, 500, unknown$skull_width))
+
+# Combine indices and original values into a data frame for easy inspection
+replaced_values <- list(
+  skull_length = data.frame(Index = skull_length_replaced, Outlier_Value = original_skull_length, replaced_Value = unknown$skull_length[skull_length_replaced]),
+  skull_width = data.frame(Index = skull_width_replaced, Outlier_Value = original_skull_width, replaced_Value = unknown$skull_width[skull_width_replaced])
+)
+
+# Print the replaced values
+print(replaced_values)
+
+#Remove Chromosomal_id from unknown 
+unknown<- unknown %>%
+  select(-(`chromosomal_id`))
+```
+
+# EDA for Unknown Dataset
+
+Observe the unknown dataset in a boxplot and descriptive summary, confirming outliers were removed.
+
+```{r, warning=FALSE}
+# Descriptive Summary after removing outliers
+cat("\nDescriptive Summary:\n")
+describe(unknown)
+
+# Create box plots of the unknown data to verify outliers corrected
+unknown_skull_height <- ggplot(unknown, aes(y = skull_height)) + 
+  geom_boxplot(fill = "lightblue", color = "darkblue") + 
+  ggtitle("Box Plot for Skull Height") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+unknown_skull_length <- ggplot(unknown, aes(y = skull_length)) + 
+  geom_boxplot(fill = "lightgreen", color = "darkgreen") + 
+  ggtitle("Box Plot for Skull Length") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+unknown_skull_width <- ggplot(unknown, aes(y = skull_width)) + 
+  geom_boxplot(fill = "lightcoral", color = "darkred") + 
+  ggtitle("Box Plot for Skull Width") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Combine all plots into one layout
+grid.arrange(unknown_skull_height, unknown_skull_length, unknown_skull_width, ncol = 3)
+```
+
+# Cross Validation and Prediction
+
+## Model with all three variables (Model_LWH)
+
+```{r}
+#for reproducibility
+set.seed(1234)
+
+# to store data
+predictions <- numeric(nrow(known))
+actual <- known$response
+
+# Leave One Out Cross Validation (LOOCV) on the known dataset
+for (i in 1:nrow(known)){
+  
+  train_data <- known[-i, ]
+  test_data <- known[i, ]
+  
+  model_LWH <- glm(response ~ skull_length + skull_height + skull_width, data = train_data, family = 'binomial')
+  
+  predictions[i] <- predict(model_LWH, newdata = test_data, type = "response")
+  
+}
+
+# check the model
+summary(model_LWH)
+
+# Odds Ratios
+exp(coef(model_LWH))
+
+# Count of each species
+table(known$response)
+
+# Proportion of each species
+prop.table(table(known$response))
+
+#MSE
+mse <- mean((predictions - actual)^2)  # Mean Squared Error
+print(paste("LOOCV Mean Squared Error:", mse))
+
+#Confusion matrix
+predicted_class <- ifelse(predictions > 0.5, 1, 0)  # Threshold at 0.5
+accuracy <- mean(predicted_class == actual)
+print(paste("Accuracy:", accuracy))
+
+print(paste("Confusion matrix for Model_LWH"))
+table(Predicted = predicted_class, Actual = actual)
+
+#########################################################
+
+#Create new dataframe to store predictions from all model
+Model_prediction <- unknown %>% 
+  as.data.frame()
+
+#Prediction on unknown
+probabilities <- predict(model_LWH, newdata = unknown, type = "response")
+#convert predicted probabilities to prediction class with threshold at 0.5
+unknown$Predicted_response <- ifelse(probabilities > 0.5, 1, 0)
+# identify chromosomal id where 1 represents subterraneus and 0 represents multiplex
+Model_prediction$Predict_LWH<- ifelse(unknown$Predicted_response == 1, "subterraneus", "multiplex")
+
+#Count the number of prediction
+print(paste("Prediction count"))
+table(Model_prediction$Predict_LWH)
+
+```
+
+## Model with two variables (Model_LH)
+
+```{r}
+#for reproducibility
+set.seed(1234)
+
+# to store data
+predictions <- numeric(nrow(known))
+actual <- known$response
+
+# Leave One Out Cross Validation (LOOCV) on the known dataset
+for (i in 1:nrow(known)){
+  
+  train_data <- known[-i, ]
+  test_data <- known[i, ]
+  
+  model_LH <- glm(response ~ skull_length + skull_height, data = train_data, family = 'binomial')
+  
+  predictions[i] <- predict(model_LH, newdata = test_data, type = "response")
+  
+}
+
+# check the model
+summary (model_LH)
+
+#MSE
+mse <- mean((predictions - actual)^2)  # Mean Squared Error
+print(paste("LOOCV Mean Squared Error:", mse))
+
+#Confusion matrix
+predicted_class <- ifelse(predictions > 0.5, 1, 0)  # Threshold at 0.5
+accuracy <- mean(predicted_class == actual)
+print(paste("Accuracy:", accuracy))
+
+print(paste("Confusion matrix for Model_LH"))
+table(Predicted = predicted_class, Actual = actual)
+
+#########################################################
+
+#Prediction on unknown
+probabilities <- predict(model_LH, newdata = unknown, type = "response")
+#convert predicted probabilities to prediction class with threshold at 0.5
+unknown$Predicted_response <- ifelse(probabilities > 0.5, 1, 0)
+# identify chromosomal id where 1 represents subterraneus and 0 represents multiplex
+Model_prediction$Predict_LH<- ifelse(unknown$Predicted_response == 1, "subterraneus", "multiplex")
+
+#Count the number of prediction
+print(paste("Prediction count"))
+table(Model_prediction$Predict_LH)
+
+```
+
+## Model with two variables (Model_HW)
+
+```{r}
+#for reproducibility
+set.seed(1234)
+
+# to store data
+predictions <- numeric(nrow(known))
+actual <- known$response
+
+# Leave One Out Cross Validation (LOOCV) on the known dataset
+for (i in 1:nrow(known)){
+  
+  train_data <- known[-i, ]
+  test_data <- known[i, ]
+  
+  model_HW <- glm(response ~ skull_height + skull_width, data = train_data, family = 'binomial')
+  
+  predictions[i] <- predict(model_HW, newdata = test_data, type = "response")
+  
+}
+
+# check the model
+summary (model_HW)
+
+#MSE
+mse <- mean((predictions - actual)^2)  # Mean Squared Error
+print(paste("LOOCV Mean Squared Error:", mse))
+
+#Confusion matrix
+predicted_class <- ifelse(predictions > 0.5, 1, 0)  # Threshold at 0.5
+accuracy <- mean(predicted_class == actual)
+print(paste("Accuracy:", accuracy))
+
+print(paste("Confusion matrix for Model_HW"))
+table(Predicted = predicted_class, Actual = actual)
+
+#########################################################
+
+#Prediction on unknown
+probabilities <- predict(model_HW, newdata = unknown, type = "response")
+#convert predicted probabilities to prediction class with threshold at 0.5
+unknown$Predicted_response <- ifelse(probabilities > 0.5, 1, 0)
+# identify chromosomal id where 1 represents subterraneus and 0 represents multiplex
+Model_prediction$Predict_HW<- ifelse(unknown$Predicted_response == 1, "subterraneus", "multiplex")
+
+#Count the number of prediction
+print(paste("Prediction count"))
+table(Model_prediction$Predict_HW)
+
+```
+
+## Model with two variables (Model_LW)
+
+```{r}
+#for reproducibility
+set.seed(1234)
+
+# to store data
+predictions <- numeric(nrow(known))
+actual <- known$response
+
+# Leave One Out Cross Validation (LOOCV) on the known dataset
+for (i in 1:nrow(known)){
+  
+  train_data <- known[-i, ]
+  test_data <- known[i, ]
+  
+  model_LW <- glm(response ~ skull_length + skull_width, data = train_data, family = 'binomial')
+  
+  predictions[i] <- predict(model_LW, newdata = test_data, type = "response")
+  
+}
+
+# check the model
+summary (model_LW)
+
+#MSE
+mse <- mean((predictions - actual)^2)  # Mean Squared Error
+print(paste("LOOCV Mean Squared Error:", mse))
+
+#Confusion matrix
+predicted_class <- ifelse(predictions > 0.5, 1, 0)  # Threshold at 0.5
+accuracy <- mean(predicted_class == actual)
+print(paste("Accuracy:", accuracy))
+
+print(paste("Confusion matrix for Model_LW"))
+table(Predicted = predicted_class, Actual = actual)
+
+#########################################################
+
+#Prediction on unknown
+probabilities <- predict(model_LW, newdata = unknown, type = "response")
+#convert predicted probabilities to prediction class with threshold at 0.5
+unknown$Predicted_response <- ifelse(probabilities > 0.5, 1, 0)
+# identify chromosomal id where 1 represents subterraneus and 0 represents multiplex
+Model_prediction$Predict_LW<- ifelse(unknown$Predicted_response == 1, "subterraneus", "multiplex")
+
+#Count the number of prediction
+print(paste("Prediction count"))
+table(Model_prediction$Predict_LW)
+
+```
+
+## Model with one variable (Model_L)
+
+```{r}
+#for reproducibility
+set.seed(1234)
+
+# to store data
+predictions <- numeric(nrow(known))
+actual <- known$response
+
+# Leave One Out Cross Validation (LOOCV) on the known dataset
+for (i in 1:nrow(known)){
+  
+  train_data <- known[-i, ]
+  test_data <- known[i, ]
+  
+  model_L <- glm(response ~ skull_length, data = train_data, family = 'binomial')
+  
+  predictions[i] <- predict(model_L, newdata = test_data, type = "response")
+  
+}
+
+# check the model
+summary (model_L)
+
+#MSE
+mse <- mean((predictions - actual)^2)  # Mean Squared Error
+print(paste("LOOCV Mean Squared Error:", mse))
+
+#Confusion matrix
+predicted_class <- ifelse(predictions > 0.5, 1, 0)  # Threshold at 0.5
+accuracy <- mean(predicted_class == actual)
+print(paste("Accuracy:", accuracy))
+
+print(paste("Confusion matrix for Model_L"))
+table(Predicted = predicted_class, Actual = actual)
+
+#########################################################
+
+#Prediction on unknown
+probabilities <- predict(model_L, newdata = unknown, type = "response")
+#convert predicted probabilities to prediction class with threshold at 0.5
+unknown$Predicted_response <- ifelse(probabilities > 0.5, 1, 0)
+# identify chromosomal id where 1 represents subterraneus and 0 represents multiplex
+Model_prediction$Predict_L<- ifelse(unknown$Predicted_response == 1, "subterraneus", "multiplex")
+
+#Count the number of prediction
+print(paste("Prediction count"))
+table(Model_prediction$Predict_L)
+
+
+```
+
+## Model with one variable (Model_H)
+
+```{r}
+#for reproducibility
+set.seed(1234)
+
+# to store data
+predictions <- numeric(nrow(known))
+actual <- known$response
+
+# Leave One Out Cross Validation (LOOCV) on the known dataset
+for (i in 1:nrow(known)){
+  
+  train_data <- known[-i, ]
+  test_data <- known[i, ]
+  
+  model_H <- glm(response ~ skull_height, data = train_data, family = 'binomial')
+  
+  predictions[i] <- predict(model_H, newdata = test_data, type = "response")
+  
+}
+
+# check the model
+summary (model_H)
+
+#MSE
+mse <- mean((predictions - actual)^2)  # Mean Squared Error
+print(paste("LOOCV Mean Squared Error:", mse))
+
+#Confusion matrix
+predicted_class <- ifelse(predictions > 0.5, 1, 0)  # Threshold at 0.5
+accuracy <- mean(predicted_class == actual)
+print(paste("Accuracy:", accuracy))
+
+print(paste("Confusion matrix for Model_H"))
+table(Predicted = predicted_class, Actual = actual)
+
+#########################################################
+
+#Prediction on unknown
+probabilities <- predict(model_H, newdata = unknown, type = "response")
+#convert predicted probabilities to prediction class with threshold at 0.5
+unknown$Predicted_response <- ifelse(probabilities > 0.5, 1, 0)
+# identify chromosomal id where 1 represents subterraneus and 0 represents multiplex
+Model_prediction$Predict_H<- ifelse(unknown$Predicted_response == 1, "subterraneus", "multiplex")
+
+#Count the number of prediction
+print(paste("Prediction count"))
+table(Model_prediction$Predict_H)
+
+```
+
+## Model with one variable (Model_W)
+
+```{r}
+#for reproducibility
+set.seed(1234)
+
+# to store data
+predictions <- numeric(nrow(known))
+actual <- known$response
+
+# Leave One Out Cross Validation (LOOCV) on the known dataset
+for (i in 1:nrow(known)){
+  
+  train_data <- known[-i, ]
+  test_data <- known[i, ]
+  
+  model_W <- glm(response ~ skull_width, data = train_data, family = 'binomial')
+  
+  predictions[i] <- predict(model_W, newdata = test_data, type = "response")
+  
+}
+
+# check the model
+summary (model_W)
+
+#MSE
+mse <- mean((predictions - actual)^2)  # Mean Squared Error
+print(paste("LOOCV Mean Squared Error:", mse))
+
+#Confusion matrix
+predicted_class <- ifelse(predictions > 0.5, 1, 0)  # Threshold at 0.5
+accuracy <- mean(predicted_class == actual)
+print(paste("Accuracy:", accuracy))
+
+print(paste("Confusion matrix for Model_W"))
+table(Predicted = predicted_class, Actual = actual)
+
+#########################################################
+
+#Prediction on unknown
+probabilities <- predict(model_W, newdata = unknown, type = "response")
+#convert predicted probabilities to prediction class with threshold at 0.5
+unknown$Predicted_response <- ifelse(probabilities > 0.5, 1, 0)
+# identify chromosomal id where 1 represents subterraneus and 0 represents multiplex
+Model_prediction$Predict_W<- ifelse(unknown$Predicted_response == 1, "subterraneus", "multiplex")
+
+#Count the number of prediction
+print(paste("Prediction count"))
+table(Model_prediction$Predict_W)
+
+```
+
+### Prediction count
+
+```{r}
+# Replace missing value with string NA
+
+Model_prediction[] <- lapply(Model_prediction, function(x) {
+  ifelse(is.na(x), "NA", x)
+})
+
+# Count occurrences for each column
+counts <- sapply(Model_prediction[, grep("^Predict_", names(Model_prediction))], 
+                 function(x) table(factor(x, levels = c("subterraneus", "multiplex", "NA"))))
+print(paste("Prediction counts by each model:"))
+counts
+
+```
+
+# Final Prediction
+
+We made the Final Prediction based on the highest frequency of predicted chromosomal type for each index.
+
+```{r}
+library(dplyr)
+
+library(dplyr)
+
+Model_prediction <- Model_prediction %>%
+  # Count occurrences of multiplex and subterraneus for each row
+  rowwise() %>%
+  mutate(
+    multiplex_count = sum(c_across(starts_with("Predict_")) == "multiplex", na.rm = TRUE),
+    subterraneus_count = sum(c_across(starts_with("Predict_")) == "subterraneus", na.rm = TRUE),
+    # Create Final_Prediction based solely on frequency counts
+    Final_Prediction = if_else(multiplex_count > subterraneus_count, "multiplex", "subterraneus")
+  ) %>%
+  ungroup()
+
+#Count the number of prediction
+print(paste("Prediction count"))
+table(Model_prediction$Final_Prediction)
+
+# View the final updated table
+print(Model_prediction)
+
+#export the excel file
+library(writexl)
+write_xlsx(Model_prediction, path = "VoleSkull_predicted.xlsx")
+```
+
+## Visualize Final Prediction
+
+```{r}
+# Bar plot of Final_Prediction counts with labels
+ggplot(Model_prediction, aes(x = Final_Prediction, fill = Final_Prediction)) +
+  geom_bar() +
+  geom_text(
+    stat = 'count', 
+    aes(label = ..count..), 
+    vjust = -0.5, 
+    size = 4
+  ) +
+  labs(
+    title = "Count of Final Predicted Chromosomal ID",
+    x = "Chromosomal ID",
+    y = "Count"
+  ) +
+  theme_minimal()
+
+```
